@@ -1,25 +1,32 @@
 # git-secret-recovery
 
-*Find what Git forgot to forget.* Phase 1: a read-only Git forensics engine that
-enumerates every object in a local repository, including objects that no branch
-or log shows anymore, and rebuilds where each blob lived (path, commit, author, date).
+*Find what Git forgot to forget.* A read-only tool that recovers secrets from every
+object in a local Git repository, including objects that no branch or log shows
+anymore, and attributes each one to its paths, commits, authors, dates and reachability.
 
-Secret detection, the CLI and JSON reporting come in later phases.
+- **Phase 1:** Git forensics engine (object enumeration, reachability, history index).
+- **Phase 2:** secret detection (AWS, GitHub, private keys) and attribution.
+- **Phase 3 (not yet implemented):** CLI and JSON reporting.
 
 ## Layout
 
 ```text
 src/git_secret_recovery/
-├── core/models.py       # GitObject, Commit, BlobLocation, Reachability (frozen dataclasses)
-└── git/
-    ├── repository.py    # validate_repository(), run_git(): no shell, read-only env
-    ├── objects.py       # list_objects(), iter_object_contents(), parse_commit(), read_tree()
-    └── history.py       # list_refs(), list_reflog_entries(), reconstruct_blob_locations()
+├── core/models.py       # GitObject, Commit, BlobLocation, SecretMatch, SecretLocation, Finding
+├── git/
+│   ├── repository.py    # validate_repository(), run_git(): no shell, read-only env
+│   ├── objects.py       # list_objects(), iter_object_contents(), parse_commit(), read_tree()
+│   └── history.py       # list_refs(), list_reflog_entries(), reconstruct_blob_locations()
+├── detection/
+│   ├── engine.py        # scan_blob(bytes) -> list[SecretMatch] (byte offsets + line numbers)
+│   └── rules/           # aws.py, github.py, private_key.py: pure detect(bytes) functions
+└── attribution/
+    └── resolver.py      # find_secrets(repo), resolve_findings(): dedup + history
 tests/
 ├── fixtures/generate_repo.py   # builds the 5-scenario fake-secret repository
 ├── fixtures/scan.py            # test helper that runs the full pipeline
 ├── integration/                # end-to-end checks on generated repositories
-└── unit/                       # commit parsing and binary detection
+└── unit/                       # parsing, each detector, engine, resolver
 ```
 
 ## How it works
@@ -37,6 +44,36 @@ tests/
 4. **Reconstruct** locations by walking the tree of *every* commit object, not only the
    commits `git log` can see. A blob gets one `BlobLocation` per (commit, path) where it
    occurs, sorted oldest first. Blobs held only by a dangling tree get `commit=None`.
+
+## Secret detection (Phase 2)
+
+Each rule is a pure function that runs over the **raw bytes** of a blob. Offsets are
+exact byte offsets, and binary blobs need no decoding.
+
+| Rule | Detects | False-positive guard |
+|---|---|---|
+| `aws` | `AKIA…` / `ASIA…` access key IDs (20 chars) | Word boundaries, upper-case only |
+| `aws` | 40-char secret access keys | Must be assigned to a `secret_access_key`-style name **and** be identifiably AWS: an `aws` prefix, or an access key ID in the same blob |
+| `github` | `ghp_` `gho_` `ghu_` `ghs_` `ghr_` + 36 chars; `github_pat_` 22 + `_` + 59 chars | Exact lengths, word boundaries |
+| `private_key` | PEM / OpenSSH / PGP `PRIVATE KEY` blocks | BEGIN and END labels must match; the body (minus armor headers) must be valid base64 of at least 32 bytes. Handles CRLF and `
+`-escaped keys in JSON. |
+
+`resolve_findings()` groups matches by `(type, SHA-256 fingerprint)`. Each distinct
+secret becomes one `Finding`, with one `SecretLocation` per (blob, path, commit, line).
+A location's reachability is that of its **commit**, because the same blob can also
+sit in a reachable commit. Without a commit, the blob's own reachability is used.
+Raw values exist only in `SecretMatch.value`, which is left out of `repr`. Everything
+else carries a fingerprint and a redacted form such as `ghp_…[40 chars]`.
+
+Results on the fixture, as asserted by the tests:
+
+| Secret | Path:line | Author | Occurrences | Reachability |
+|---|---|---|---|---|
+| AWS key ID + secret #1 | `config/aws_credentials:2-3` | Bob Builder | 1 | reachable |
+| GitHub PAT #1 | `.env:1` | Carol Coder | 1 | reflog-only |
+| Private key | `deploy/id_rsa:1` | Dave Deployer | 2 (both pre-rebase commits) | reflog-only |
+| AWS key ID + secret #2 | `scripts/backup.sh:2-3` | Eve Experimenter | 1 | reflog-only |
+| GitHub PAT #2 | `README.md:3` | Frank Forgetful | 1 (stash commit) | unreachable |
 
 ## Hiding scenarios in the fixture
 
@@ -74,6 +111,21 @@ uv run ruff format --check . && uv run ruff check .         # formatting and lin
   `gc`, `prune` or `repack -d`.
 
 ## Limitations
+
+### Detection
+
+- **No validity check.** By design, no credential is sent to an external service.
+  GitHub's offline CRC32 token checksum is also not verified, because the fixture's
+  `ghp_FAKE…` tokens would fail it.
+- **No allowlist.** AWS's documented `…EXAMPLE` keys are reported like real keys,
+  because the fixture depends on them. A production scanner would suppress them.
+- **Context-dependent AWS secrets.** A secret key named without "aws", in a blob with no
+  access key ID (for example, split across two files), is not reported.
+- **Truncated private keys** (no END line) are not reported, and neither are keys
+  stored in binary formats such as DER or PKCS#12.
+- **Compressed or encoded content** (zip, gzip, base64-wrapped config) is not unpacked.
+
+### Git forensics
 
 - **Garbage collection is final.** After `git gc --prune=now` (or the default 2-week
   prune), unreachable objects are deleted and cannot be recovered from the object store.

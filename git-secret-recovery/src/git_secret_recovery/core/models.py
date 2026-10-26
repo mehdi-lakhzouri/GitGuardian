@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -42,3 +43,57 @@ class BlobLocation:
     blob_sha: str
     path: str
     commit: Commit | None  # None when the blob was only found in a dangling tree
+
+
+@dataclass(frozen=True, slots=True)
+class SecretMatch:
+    """A secret found inside one blob. ``value`` is excluded from ``repr`` so it never leaks
+    into logs or tracebacks; use ``fingerprint`` and ``redacted`` to refer to it."""
+
+    secret_type: str  # stable identifier, e.g. "aws_access_key_id", "private_key"
+    value: str = field(repr=False)
+    start: int  # byte offset in the blob, inclusive
+    end: int  # byte offset in the blob, exclusive
+    line: int  # 1-based line of ``start``
+
+    @property
+    def fingerprint(self) -> str:
+        return secret_fingerprint(self.value)
+
+    @property
+    def redacted(self) -> str:
+        return redact(self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class SecretLocation:
+    """One historical occurrence of a secret: where it sat, in which commit, and how
+    reachable that commit (or, without a commit, the blob) still is."""
+
+    blob_sha: str
+    path: str | None  # None when the blob was never seen inside a tree
+    commit: Commit | None
+    reachability: Reachability
+    line: int
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
+class Finding:
+    """A distinct secret (deduplicated by type and fingerprint) with all its occurrences."""
+
+    secret_type: str
+    fingerprint: str
+    redacted: str
+    locations: tuple[SecretLocation, ...]
+
+
+def secret_fingerprint(value: str) -> str:
+    """SHA-256 of the secret: identifies it across blobs without storing it."""
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def redact(value: str) -> str:
+    """Keep only a 4-character prefix (enough to recognise the type) and the length."""
+    return f"{value[:4]}…[{len(value)} chars]"
