@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 
 
 class Reachability(StrEnum):
@@ -97,3 +98,18 @@ def secret_fingerprint(value: str) -> str:
 def redact(value: str) -> str:
     """Keep only a 4-character prefix (enough to recognise the type) and the length."""
     return f"{value[:4]}…[{len(value)} chars]"
+
+
+@dataclass(frozen=True, slots=True)
+class ScanResult:
+    """Everything one scan produced: the findings plus the context needed to report them."""
+
+    repository: Path
+    head: str | None
+    started_at: datetime
+    duration_seconds: float
+    objects_by_type: dict[str, int]
+    objects_by_reachability: dict[str, int]
+    blobs_scanned: int
+    binary_blobs: int
+    findings: tuple[Finding, ...]
