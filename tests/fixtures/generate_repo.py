@@ -107,6 +107,7 @@ def generate_repo(target: Path) -> Path:
             raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
 
     git("init")
+    git("config", "core.longpaths", "true")  # persists for later commands run by tests
     _write(target, "README.md", "# Demo service\n")
     (target / "assets").mkdir()
     (target / "assets" / "favicon.ico").write_bytes(BINARY_ASSET)

@@ -15,9 +15,6 @@ from git_secret_recovery.core.models import (
     SecretLocation,
     SecretMatch,
 )
-from git_secret_recovery.detection.engine import scan_blob
-from git_secret_recovery.git.history import reconstruct_blob_locations
-from git_secret_recovery.git.objects import iter_object_contents, list_objects
 
 _UNDATED = datetime.max.replace(tzinfo=UTC)
 
@@ -25,16 +22,12 @@ _UNDATED = datetime.max.replace(tzinfo=UTC)
 def find_secrets(repo: Path) -> list[Finding]:
     """Scan every blob in the repository and return attributed, deduplicated findings.
 
-    ``repo`` must already be validated (see ``validate_repository``). Read-only.
+    Kept for Phase 2 callers; the pipeline itself lives in ``core.scanner``.
     """
-    objects = list_objects(repo)
-    blob_shas = [obj.sha for obj in objects.values() if obj.type == "blob"]
-    matches = {
-        sha: found
-        for sha, _, content in iter_object_contents(repo, blob_shas)
-        if (found := scan_blob(content))
-    }
-    return resolve_findings(matches, objects, reconstruct_blob_locations(repo, objects))
+    # Imported here because the scanner depends on this module (resolve_findings).
+    from git_secret_recovery.core.scanner import scan_repository
+
+    return list(scan_repository(repo).findings)
 
 
 def resolve_findings(

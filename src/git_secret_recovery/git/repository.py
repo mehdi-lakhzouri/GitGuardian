@@ -79,3 +79,19 @@ def validate_repository(path: str | os.PathLike[str]) -> Path:
     except GitError as exc:
         raise GitError(f"not a Git repository: {repo}") from exc
     return repo
+
+
+def repository_dirs(repo: Path) -> list[Path]:
+    """The Git directory and, unless the repository is bare, its work tree.
+
+    Used to refuse writing anything (e.g. a report) inside the scanned repository.
+    """
+    # --show-toplevel fails in a bare repository but the git dir line is still printed.
+    output = run_git(repo, "rev-parse", "--absolute-git-dir", "--show-toplevel", check=False)
+    return [Path(line).resolve() for line in output.decode().splitlines() if line.strip()]
+
+
+def head_commit(repo: Path) -> str | None:
+    """SHA of the commit HEAD points to, or None (empty repository, detached to nothing)."""
+    output = run_git(repo, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", check=False)
+    return output.decode().strip() or None
